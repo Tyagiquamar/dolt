@@ -70,6 +70,12 @@ func doDoltBranch(ctx *sql.Context, args []string) (int, error) {
 		return 1, fmt.Errorf("Could not load database %s", dbName)
 	}
 
+	if apr.Contains(cli.OrphanFlag) {
+		if conflicting := apr.ContainsMany(cli.CopyFlag, cli.MoveFlag, cli.DeleteFlag, cli.DeleteForceFlag, cli.TrackFlag, cli.SetUpstreamToFlag, cli.RemoteParam); len(conflicting) > 0 {
+			return 1, fmt.Errorf("--%s cannot be used with --%s", cli.OrphanFlag, conflicting[0])
+		}
+	}
+
 	var rsc doltdb.ReplicationStatusController
 
 	switch {
@@ -467,7 +473,13 @@ func createNewBranch(ctx *sql.Context, dbData env.DbData[*sql.Context], apr *arg
 	if err != nil {
 		return err
 	}
-	err = actions.CreateBranchWithStartPt(ctx, dbData, branchName, startPt, apr.Contains(cli.ForceFlag), rsc)
+	var newHead actions.NewBranchHead
+	if apr.Contains(cli.OrphanFlag) {
+		newHead = func(startCommit *doltdb.Commit) (*doltdb.Commit, error) {
+			return buildOrphanCommit(ctx, dbData.Ddb, startCommit, branchName)
+		}
+	}
+	err = actions.CreateBranchWithHead(ctx, dbData, branchName, startPt, apr.Contains(cli.ForceFlag), newHead, rsc)
 	if err != nil {
 		return err
 	}
@@ -481,6 +493,21 @@ func createNewBranch(ctx *sql.Context, dbData env.DbData[*sql.Context], apr *arg
 	}
 
 	return nil
+}
+
+// buildOrphanCommit writes a dangling, parentless commit holding |startCommit|'s root. The message names the start
+// point so the commit cannot hash identically to the repository's initial commit.
+func buildOrphanCommit(ctx *sql.Context, ddb *doltdb.DoltDB, startCommit *doltdb.Commit, branchName string) (*doltdb.Commit, error) {
+	startHash, err := startCommit.HashOf()
+	if err != nil {
+		return nil, err
+	}
+	msg := fmt.Sprintf("Initialize orphan branch %s from %s", branchName, startHash.String())
+	rootHash, meta, err := writeRootWithSessionMeta(ctx, ddb, startCommit, msg)
+	if err != nil {
+		return nil, err
+	}
+	return ddb.CommitDanglingRoot(ctx, rootHash, meta)
 }
 
 // copyBranch takes arguments from |apr| to create a branch from another branch. If |giveAdminPrivs| is true, then the

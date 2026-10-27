@@ -260,8 +260,16 @@ func upstreamOrHead[C doltdb.Context](ctx C, dbdata env.DbData[C], branch ref.Do
 	return dbdata.Ddb.ResolveCommitRef(ctx, headRef)
 }
 
+// NewBranchHead returns the commit a new branch points at, given its resolved start point.
+type NewBranchHead func(startCommit *doltdb.Commit) (*doltdb.Commit, error)
+
 func CreateBranchWithStartPt[C doltdb.Context](ctx C, dbData env.DbData[C], newBranch, startPt string, force bool, rsc *doltdb.ReplicationStatusController) error {
-	err := createBranch(ctx, dbData, newBranch, startPt, force, rsc)
+	return CreateBranchWithHead(ctx, dbData, newBranch, startPt, force, nil, rsc)
+}
+
+// CreateBranchWithHead is CreateBranchWithStartPt where a non-nil |newHead| chooses the commit the branch points at.
+func CreateBranchWithHead[C doltdb.Context](ctx C, dbData env.DbData[C], newBranch, startPt string, force bool, newHead NewBranchHead, rsc *doltdb.ReplicationStatusController) error {
+	err := createBranch(ctx, dbData, newBranch, startPt, force, newHead, rsc)
 
 	if err != nil {
 		if existsErr := BranchExistsError(err); existsErr != nil {
@@ -283,6 +291,10 @@ func CreateBranchWithStartPt[C doltdb.Context](ctx C, dbData env.DbData[C], newB
 }
 
 func CreateBranchOnDB(ctx context.Context, ddb *doltdb.DoltDB, newBranch, startingPoint string, force bool, headRef ref.DoltRef, rsc *doltdb.ReplicationStatusController) error {
+	return createBranchOnDB(ctx, ddb, newBranch, startingPoint, force, headRef, nil, rsc)
+}
+
+func createBranchOnDB(ctx context.Context, ddb *doltdb.DoltDB, newBranch, startingPoint string, force bool, headRef ref.DoltRef, newHead NewBranchHead, rsc *doltdb.ReplicationStatusController) error {
 	branchRef := ref.NewBranchRef(newBranch)
 	hasRef, err := ddb.HasRef(ctx, branchRef)
 	if err != nil {
@@ -312,15 +324,22 @@ func CreateBranchOnDB(ctx context.Context, ddb *doltdb.DoltDB, newBranch, starti
 		return doltdb.ErrGhostCommitEncountered
 	}
 
+	if newHead != nil {
+		cm, err = newHead(cm)
+		if err != nil {
+			return err
+		}
+	}
+
 	return ddb.NewBranchAtCommit(ctx, branchRef, cm, rsc)
 }
 
-func createBranch[C doltdb.Context](ctx C, dbData env.DbData[C], newBranch, startingPoint string, force bool, rsc *doltdb.ReplicationStatusController) error {
+func createBranch[C doltdb.Context](ctx C, dbData env.DbData[C], newBranch, startingPoint string, force bool, newHead NewBranchHead, rsc *doltdb.ReplicationStatusController) error {
 	headRef, err := dbData.Rsr.CWBHeadRef(ctx)
 	if err != nil {
 		return err
 	}
-	return CreateBranchOnDB(ctx, dbData.Ddb, newBranch, startingPoint, force, headRef, rsc)
+	return createBranchOnDB(ctx, dbData.Ddb, newBranch, startingPoint, force, headRef, newHead, rsc)
 }
 
 var emptyHash = hash.Hash{}
